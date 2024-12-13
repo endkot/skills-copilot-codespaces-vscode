@@ -1,28 +1,78 @@
-// Create a web server
-// npm install express
-// npm install body-parser
+//Create a web server
+const express = require("express");
+const bodyParser = require("body-parser");
+const { randomBytes } = require("crypto");
+const cors = require("cors");
+const axios = require("axios");
 
-// load express module
-var express = require('express');
-var bodyParser = require('body-parser');
-var app = express();
-
-// load body-parser module
+const app = express();
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({extended: true}));
+app.use(cors());
 
-// load comments module
-var comments = require('./comments.js');
+const commentsByPostId = {};
 
-// load comments data
-var commentsData = comments.loadComments();
-
-// 1. GET /comments
-app.get('/comments', function(req, res) {
-  res.status(200).send(commentsData);
+//Get all comments associated with a post
+app.get("/posts/:id/comments", (req, res) => {
+  res.send(commentsByPostId[req.params.id] || []);
 });
 
-// 2. POST /comments
-app.post('/comments', function(req, res) {
-  var newComment = {
-    id: commentsData.length + 1,
+//Create a new comment
+app.post("/posts/:id/comments", async (req, res) => {
+  const commentId = randomBytes(4).toString("hex");
+  const { content } = req.body;
+
+  const comments = commentsByPostId[req.params.id] || [];
+
+  comments.push({ id: commentId, content, status: "pending" });
+
+  commentsByPostId[req.params.id] = comments;
+
+  //Send comment to event bus
+  await axios.post("http://event-bus-srv:4005/events", {
+    type: "CommentCreated",
+    data: {
+      id: commentId,
+      content,
+      postId: req.params.id,
+      status: "pending",
+    },
+  });
+
+  res.status(201).send(comments);
+});
+
+//Receive events from event bus
+app.post("/events", async (req, res) => {
+  console.log("Received Event:", req.body.type);
+
+  const { type, data } = req.body;
+
+  if (type === "CommentModerated") {
+    const { id, postId, status } = data;
+
+    const comments = commentsByPostId[postId];
+
+    const comment = comments.find((comment) => {
+      return comment.id === id;
+    });
+
+    comment.status = status;
+
+    //Send comment to event bus
+    await axios.post("http://event-bus-srv:4005/events", {
+      type: "CommentUpdated",
+      data: {
+        id,
+        postId,
+        status,
+        content: comment.content,
+      },
+    });
+  }
+
+  res.send({});
+});
+
+app.listen(4001, () => {
+  console.log("Listening on 4001");
+});
